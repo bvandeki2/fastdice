@@ -49,19 +49,79 @@ the above runs in roughly ~400us on my machine (5700x3d, 2x32GB 3200MHz DDR4).
 
 ## Building
 
+### Native Build
+
 pick your favorite flavor of C++ 17 and beyond...
 
 ```sh
 cmake --build build
-./build/Debug/main/FastDice
+./build/Debug/FastDice
 
 # release helps ~10x, anecdotally
 cmake --build build --config Release
-./build/Release/main/Bench
+./build/Release/Bench
 ```
+
+### WebAssembly Build
+
+Targeting web assembly
+
+#### Prerequisites
+
+Install the Emscripten SDK:
+
+```sh
+# Clone the emsdk repository
+git clone https://github.com/emscripten-core/emsdk.git
+cd emsdk
+
+# Install and activate the latest SDK
+./emsdk install latest
+./emsdk activate latest
+
+# Activate PATH and other environment variables in the current terminal (Unix/Mac)
+source ./emsdk_env.sh
+
+# On Windows, use:
+# .\emsdk_env.ps1
+```
+
+#### Build for WebAssembly
+
+**On Unix/Linux/Mac:**
+```sh
+./build-wasm.sh
+```
+
+**On Windows:**
+```powershell
+.\build-wasm.ps1
+```
+
+#### Run the Demo
+
+After building, serve the web directory:
+
+```sh
+cd web
+python3 -m http.server 8000
+# or
+npx http-server -p 8000
+```
+
+Then open http://localhost:8000 in your browser to see the interactive demo!
+
+The WebAssembly build provides a JavaScript API to:
+- Roll multiple dice (e.g., 3d6, 2d20)
+- Combine distributions (addition, subtraction, multiplication)
+- Calculate percentiles and probability distributions
+- Build complex dice expressions programmatically
+
+50,000d100 runs in ~5980ms using the web/ calculate.
 
 ## Future Directions
 - Graph Compilation (lots of low hanging fruit optimization-wise)
 - `double` precision
-- SIMD
+- SIMD (webassembly too)
 - Dice DSL (lua?)
+- ~~WASM port~~ ✓ (done!)
