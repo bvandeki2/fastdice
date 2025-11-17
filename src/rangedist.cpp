@@ -469,3 +469,39 @@ RangeDist RangeDist::map(std::function<RangeDist(int32_t)> func) const {
 
     return RangeDist(newMin, newMax, newProbabilities);
 }
+
+RangeDist RangeDist::maximum(const RangeDist &other) const {
+    int32_t newMin = std::max(this->min, other.min);
+    int32_t newMax = std::max(this->max, other.max);
+
+    std::vector<float_t> newProbabilities(static_cast<size_t>(newMax - newMin + 1), 0.0f);
+
+    for (size_t i = 0; i < this->p.size(); ++i) {
+        int32_t outcome1 = static_cast<int32_t>(i + this->min);
+        for (size_t j = 0; j < other.p.size(); ++j) {
+            int32_t outcome2 = static_cast<int32_t>(j + other.min);
+            int32_t maxOutcome = std::max(outcome1, outcome2);
+            newProbabilities[static_cast<size_t>(maxOutcome - newMin)] += this->p[i] * other.p[j];
+        }
+    }
+
+    return RangeDist(newMin, newMax, newProbabilities);
+}
+
+RangeDist RangeDist::mininum(const RangeDist &other) const {
+    int32_t newMin = std::min(this->min, other.min);
+    int32_t newMax = std::min(this->max, other.max);
+
+    std::vector<float_t> newProbabilities(static_cast<size_t>(newMax - newMin + 1), 0.0f);
+
+    for (size_t i = 0; i < this->p.size(); ++i) {
+        int32_t outcome1 = static_cast<int32_t>(i + this->min);
+        for (size_t j = 0; j < other.p.size(); ++j) {
+            int32_t outcome2 = static_cast<int32_t>(j + other.min);
+            int32_t minOutcome = std::min(outcome1, outcome2);
+            newProbabilities[static_cast<size_t>(minOutcome - newMin)] += this->p[i] * other.p[j];
+        }
+    }
+
+    return RangeDist(newMin, newMax, newProbabilities);
+}

@@ -57,6 +57,9 @@ class RangeDist {
 
     RangeDist map(std::function<RangeDist(int32_t)> func) const;
     // RangeDist map(std::function<RangeDist(int32_t)> func, int32_t newMin, int32_t newMax) const;
+
+    RangeDist maximum(const RangeDist &other) const;
+    RangeDist mininum(const RangeDist &other) const;
 };
 
 #endif // RANGEDIST_H

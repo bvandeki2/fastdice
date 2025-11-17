@@ -20,7 +20,10 @@ int main() {
     const int32_t monsterAc = 15;
     const int32_t attackBonus = 5;
 
-    auto totalDamage = RangeDist::uniform(1, 20).map([&](int32_t d20roll) {
+    auto d20 = RangeDist::uniform(1, 20);
+    auto d20adv = d20.maximum(d20);
+
+    auto totalDamage = d20adv.map([&](int32_t d20roll) {
         if (d20roll == 20) {
             return critDamageAug;
         } else {
