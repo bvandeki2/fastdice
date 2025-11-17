@@ -4,3 +4,6 @@ IndentWidth: 4
 UseTab: Never
 ColumnLimit: 100
 AllowShortIfStatementsOnASingleLine: false
+BreakBeforeBinaryOperators: NonAssignment
+ContinuationIndentWidth: 4
+PenaltyIndentContinuation: 0

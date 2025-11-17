@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <vector>
 
 /**
@@ -14,6 +15,8 @@
  * within the range are stored in the vector `p`.
  *
  */
+class PartialRangeDist;
+
 class RangeDist {
     const std::vector<float_t> p;
     const int32_t min;
@@ -36,10 +39,13 @@ class RangeDist {
 
   public:
     static RangeDist uniform(int32_t min, int32_t max);
+    static RangeDist literal(int32_t value);
 
     const std::vector<float_t> &getProbabilities() const;
     int32_t getMin() const;
     int32_t getMax() const;
+
+    RangeDist omit(const std::vector<int32_t> &items) const;
 
     RangeDist operator-() const;
     RangeDist operator*(int32_t constant) const;
@@ -57,6 +63,33 @@ class RangeDist {
 
     RangeDist map(std::function<RangeDist(int32_t)> func) const;
     // RangeDist map(std::function<RangeDist(int32_t)> func, int32_t newMin, int32_t newMax) const;
+
+    PartialRangeDist partialMap(std::function<std::optional<RangeDist>(int32_t)> func) const;
+
+    friend class PartialRangeDist;
+};
+
+// just used for return type of partialMap, users are not expected to construct this directly
+class PartialRangeDist {
+  private:
+    std::vector<std::optional<RangeDist>> parts;
+    RangeDist original;
+
+    PartialRangeDist(const RangeDist &original);
+
+  public:
+    // Delete copy constructor and copy assignment operator
+    PartialRangeDist(const PartialRangeDist &) = delete;
+    PartialRangeDist &operator=(const PartialRangeDist &) = delete;
+
+    // Allow move constructor and move assignment operator
+    PartialRangeDist(PartialRangeDist &&) noexcept = default;
+    PartialRangeDist &operator=(PartialRangeDist &&) noexcept = default;
+
+    PartialRangeDist partialMap(std::function<std::optional<RangeDist>(int32_t)> func);
+    RangeDist finalize() const;
+
+    friend class RangeDist;
 };
 
 #endif // RANGEDIST_H

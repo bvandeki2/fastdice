@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdint>
 #include <cstdio>
 #include <limits>
 #include <stdexcept>
@@ -181,8 +180,8 @@ RangeDist RangeDist::repeatByAddition(const RangeDist &dist, uint32_t count) {
 RangeDist RangeDist::convolvePowerFFT(const RangeDist &dist, uint32_t exponent) {
     auto computeBounded = [](int32_t value, uint32_t times) -> int32_t {
         const int64_t product = static_cast<int64_t>(value) * static_cast<int64_t>(times);
-        if (product < std::numeric_limits<int32_t>::min() ||
-            product > std::numeric_limits<int32_t>::max()) {
+        if (product < std::numeric_limits<int32_t>::min()
+            || product > std::numeric_limits<int32_t>::max()) {
             throw std::overflow_error("repeat range exceeds int32_t bounds");
         }
         return static_cast<int32_t>(product);
@@ -281,9 +280,39 @@ RangeDist RangeDist::uniform(int32_t min, int32_t max) {
     return RangeDist(min, max, probabilities);
 }
 
+RangeDist RangeDist::literal(int32_t value) {
+    return RangeDist(value, value, std::vector<float_t>{1.0f});
+}
+
 const std::vector<float_t> &RangeDist::getProbabilities() const { return p; }
 int32_t RangeDist::getMin() const { return min; }
 int32_t RangeDist::getMax() const { return max; }
+
+RangeDist RangeDist::omit(const std::vector<int32_t> &items) const {
+    std::vector<float_t> newProbabilities = this->p;
+    float_t totalOmittedProb = 0.0f;
+
+    for (int32_t item : items) {
+        if (item < this->min || item > this->max) {
+            throw std::out_of_range("Item to omit is out of the distribution range.");
+        }
+        size_t index = static_cast<size_t>(item - this->min);
+        totalOmittedProb += newProbabilities[index];
+        newProbabilities[index] = 0.0f;
+    }
+
+    float_t factor = 1.0f - totalOmittedProb;
+
+    if (factor < 1e-7f) {
+        throw std::invalid_argument("Omitting these items would eliminate all probability mass.");
+    }
+
+    for (float_t &prob : newProbabilities) {
+        prob /= factor;
+    }
+
+    return RangeDist(this->min, this->max, newProbabilities);
+}
 
 RangeDist RangeDist::operator-() const {
     int32_t newMin = -this->max;
@@ -383,8 +412,8 @@ std::vector<int32_t> RangeDist::percentiles(const std::vector<float_t> &percenti
 
     for (size_t i = 0; i < p.size() && percentileIndex < percentiles.size(); ++i) {
         accumulatedCdf += p[i];
-        while (percentileIndex < percentiles.size() &&
-               accumulatedCdf >= percentiles[percentileIndex]) {
+        while (percentileIndex < percentiles.size()
+               && accumulatedCdf >= percentiles[percentileIndex]) {
             results.push_back(static_cast<int32_t>(i + min));
             ++percentileIndex;
         }
@@ -464,6 +493,92 @@ RangeDist RangeDist::map(std::function<RangeDist(int32_t)> func) const {
             int32_t mappedOutcome = static_cast<int32_t>(j + outcome.min);
             int32_t k = mappedOutcome - newMin;
             newProbabilities[static_cast<size_t>(k)] += outcome.p[j] * prob;
+        }
+    }
+
+    return RangeDist(newMin, newMax, newProbabilities);
+}
+
+/**
+ * Applies a mapping function to the outcomes of the original distribution and updates
+ * the `parts` array with the resulting `RangeDist` objects.
+ *
+ * @param func A function that takes an `int32_t` outcome as input and returns a
+ *             `std::unique_ptr<RangeDist>` representing the mapped distribution for that outcome.
+ *             If the function returns `nullptr`, the corresponding part is not updated.
+ *
+ * @return A reference to the current `PartialRangeDist` object after applying the mapping function.
+ *
+ * @details This method iterates over the probabilities of the original distribution. For each
+ *          outcome that does not already have a corresponding `RangeDist` in the `parts` array,
+ *          the provided mapping function is called. If the function returns a non-null pointer,
+ *          the resulting `RangeDist` is stored in the `parts` array at the corresponding index.
+ */
+PartialRangeDist
+RangeDist::partialMap(std::function<std::optional<RangeDist>(int32_t)> func) const {
+    return PartialRangeDist(*this).partialMap(func);
+}
+
+PartialRangeDist::PartialRangeDist(const RangeDist &original)
+    : original(original), parts(original.getProbabilities().size()) {}
+
+/**
+ * Applies a mapping function to the outcomes of the original distribution and updates
+ * the `parts` array with the resulting `RangeDist` objects.
+ *
+ * @param func A function that takes an `int32_t` outcome as input and returns a
+ *             `std::unique_ptr<RangeDist>` representing the mapped distribution for that outcome.
+ *             If the function returns `nullptr`, the corresponding part is not updated.
+ *
+ * @return A reference to the current `PartialRangeDist` object after applying the mapping function.
+ *
+ * @details This method iterates over the probabilities of the original distribution. For each
+ *          outcome that does not already have a corresponding `RangeDist` in the `parts` array,
+ *          the provided mapping function is called. If the function returns a non-null pointer,
+ *          the resulting `RangeDist` is stored in the `parts` array at the corresponding index.
+ */
+PartialRangeDist
+PartialRangeDist::partialMap(std::function<std::optional<RangeDist>(int32_t)> func) {
+    for (auto &part : parts) {
+        if (part) {
+            continue;
+        }
+        size_t index = &part - &parts[0];
+        int32_t outcome = static_cast<int32_t>(index + original.min);
+        std::optional<RangeDist> mappedDist = func(outcome);
+        if (mappedDist) {
+            part.emplace(std::move(*mappedDist));
+        }
+    }
+    return std::move(*this);
+}
+
+RangeDist PartialRangeDist::finalize() const {
+    int32_t newMin = std::numeric_limits<int32_t>::max();
+    int32_t newMax = std::numeric_limits<int32_t>::min();
+
+    for (size_t i = 0; i < parts.size(); ++i) {
+        if (parts[i] == std::nullopt) {
+            throw std::runtime_error(
+                "Not all parts have been mapped; cannot finalize PartialRangeDist.");
+        }
+
+        const RangeDist &partDist = *parts[i];
+        if (partDist.min < newMin)
+            newMin = partDist.min;
+        if (partDist.max > newMax)
+            newMax = partDist.max;
+    }
+
+    std::vector<float_t> newProbabilities(static_cast<size_t>(newMax - newMin + 1), 0.0f);
+
+    for (size_t i = 0; i < parts.size(); ++i) {
+        float_t originalProb = original.p[i];
+        const RangeDist &partDist = *parts[i];
+        for (size_t j = 0; j < partDist.p.size(); ++j) {
+            int32_t mappedOutcome = static_cast<int32_t>(j + partDist.getMin());
+            int32_t k = mappedOutcome - newMin;
+            newProbabilities[static_cast<size_t>(k)] += partDist.p[j] * originalProb;
         }
     }
 
