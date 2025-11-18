@@ -381,10 +381,10 @@ std::vector<int32_t> RangeDist::percentiles(const std::vector<float_t> &percenti
     float_t accumulatedCdf = 0.0f;
     size_t percentileIndex = 0;
 
-    for (size_t i = 0; i < p.size() && percentileIndex < percentiles.size(); ++i) {
+    for (size_t i = 0; i < p.size() && percentileIndex < sortedPercentiles.size(); ++i) {
         accumulatedCdf += p[i];
-        while (percentileIndex < percentiles.size() &&
-               accumulatedCdf >= percentiles[percentileIndex]) {
+        while (percentileIndex < sortedPercentiles.size() &&
+               accumulatedCdf >= sortedPercentiles[percentileIndex]) {
             results.push_back(static_cast<int32_t>(i + min));
             ++percentileIndex;
         }
