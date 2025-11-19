@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FastDice - WebAssembly Demo</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 900px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            border-bottom: 3px solid #4CAF50;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #555;
+            margin-top: 30px;
+        }
+        .input-group {
+            margin: 20px 0;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        label {
+            font-weight: bold;
+            min-width: 100px;
+        }
+        input[type="number"] {
+            padding: 8px;
+            border: 2px solid #ddd;
+            border-radius: 4px;
+            width: 100px;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background 0.3s;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .results {
+            margin-top: 20px;
+            padding: 20px;
+            background: #f9f9f9;
+            border-left: 4px solid #4CAF50;
+            border-radius: 4px;
+        }
+        .result-item {
+            margin: 10px 0;
+            padding: 8px;
+            background: white;
+            border-radius: 3px;
+        }
+        .result-label {
+            font-weight: bold;
+            color: #666;
+        }
+        .result-value {
+            color: #4CAF50;
+            font-size: 18px;
+            font-weight: bold;
+        }
+        #loading {
+            text-align: center;
+            padding: 20px;
+            color: #666;
+        }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #4CAF50;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .example-section {
+            background: #e8f5e9;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+        code {
+            background: #f5f5f5;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎲 FastDice - WebAssembly Demo</h1>
+        
+        <div id="loading">
+            <div class="spinner"></div>
+            <p>Loading WebAssembly module...</p>
+        </div>
+
+        <div id="app" style="display: none;">
+            <p>This demo shows FastDice running in your browser via WebAssembly. Calculate exact probability distributions for dice rolls!</p>
+
+            <h2>Simple Dice Roll</h2>
+            <div class="example-section">
+                <p>Roll multiple dice and see the probability distribution.</p>
+                <div class="input-group">
+                    <label for="diceCount">Number of dice:</label>
+                    <input type="number" id="diceCount" value="3" min="1" max="20">
+                    <label for="diceSides">Sides per die:</label>
+                    <input type="number" id="diceSides" value="6" min="2" max="100">
+                    <button onclick="calculateDice()">Calculate</button>
+                </div>
+            </div>
+
+            <h2>Custom Expression</h2>
+            <div class="example-section">
+                <p>Calculate: <code>2d6 + 1d4 + 5</code></p>
+                <button onclick="calculateCustom()">Calculate Custom Expression</button>
+            </div>
+
+            <h2>Attack Roll Simulation</h2>
+            <div class="example-section">
+                <p>Simulate a D&D-style attack with advantage (roll 2d20, take higher) + modifier</p>
+                <div class="input-group">
+                    <label for="attackBonus">Attack Bonus:</label>
+                    <input type="number" id="attackBonus" value="5" min="0" max="20">
+                    <button onclick="calculateAttack()">Calculate Attack</button>
+                </div>
+            </div>
+
+            <div id="results" class="results" style="display: none;">
+                <h3>Results</h3>
+                <div id="resultsContent"></div>
+            </div>
+
+            <div id="timing" style="margin-top: 20px; color: #666; font-size: 14px;"></div>
+        </div>
+    </div>
+
+    <script src="fastdice.js"></script>
+    <script>
+        let Module = null;
+        let api = {};
+        let moduleReady = false;
+
+        // Initialize the WebAssembly module
+        createFastDiceModule().then(function(m) {
+            Module = m;
+            moduleReady = true;
+            
+            // Wrap the C++ functions for easier use
+            api.createUniformDist = Module.cwrap('createUniformDist', 'number', ['number', 'number']);
+            api.destroyRangeDist = Module.cwrap('destroyRangeDist', null, ['number']);
+            api.repeatDist = Module.cwrap('repeatDist', 'number', ['number', 'number']);
+            api.addDists = Module.cwrap('addDists', 'number', ['number', 'number']);
+            api.addConstant = Module.cwrap('addConstant', 'number', ['number', 'number']);
+            api.subtractConstant = Module.cwrap('subtractConstant', 'number', ['number', 'number']);
+            api.multiplyConstant = Module.cwrap('multiplyConstant', 'number', ['number', 'number']);
+            api.negateDist = Module.cwrap('negateDist', 'number', ['number']);
+            api.getMin = Module.cwrap('getMin', 'number', ['number']);
+            api.getMax = Module.cwrap('getMax', 'number', ['number']);
+            api.getProbabilityCount = Module.cwrap('getProbabilityCount', 'number', ['number']);
+            api.getProbabilities = Module.cwrap('getProbabilities', null, ['number', 'number']);
+            api.getPercentile = Module.cwrap('getPercentile', 'number', ['number', 'number']);
+            api.getPercentiles = Module.cwrap('getPercentiles', null, ['number', 'number', 'number', 'number']);
+            api.rollDice = Module.cwrap('rollDice', 'number', ['number', 'number']);
+
+            console.log('Module loaded successfully');
+            console.log('Available heap views:', Object.keys(Module).filter(k => k.includes('HEAP')));
+
+            // Hide loading, show app
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('app').style.display = 'block';
+        }).catch(function(err) {
+            document.getElementById('loading').innerHTML = 
+                '<p style="color: red;">Error loading WebAssembly module: ' + err + '</p>';
+        });
+
+        function getDistributionPercentiles(distPtr) {
+            if (!moduleReady || !Module) {
+                throw new Error('Module not ready');
+            }
+            
+            const percentiles = [0.05, 0.25, 0.5, 0.75, 0.95];
+            const count = percentiles.length;
+            
+            // Allocate memory for input and output
+            const percentilesPtr = Module._malloc(count * 4); // 4 bytes per float
+            const resultsPtr = Module._malloc(count * 4); // 4 bytes per int32
+            
+            // Copy percentiles to WASM memory using setValue for each value
+            for (let i = 0; i < count; i++) {
+                Module.setValue(percentilesPtr + (i * 4), percentiles[i], 'float');
+            }
+            
+            // Call the function
+            api.getPercentiles(distPtr, percentilesPtr, count, resultsPtr);
+            
+            // Read results using getValue
+            const results = [];
+            for (let i = 0; i < count; i++) {
+                results.push(Module.getValue(resultsPtr + (i * 4), 'i32'));
+            }
+            
+            // Free memory
+            Module._free(percentilesPtr);
+            Module._free(resultsPtr);
+            
+            return {
+                p5: results[0],
+                p25: results[1],
+                p50: results[2],
+                p75: results[3],
+                p95: results[4]
+            };
+        }
+
+        function displayResults(percentiles, description, timeMs) {
+            const resultsDiv = document.getElementById('results');
+            const resultsContent = document.getElementById('resultsContent');
+            
+            resultsContent.innerHTML = `
+                <p><strong>${description}</strong></p>
+                <div class="result-item">
+                    <span class="result-label">5th percentile:</span>
+                    <span class="result-value">${percentiles.p5}</span>
+                </div>
+                <div class="result-item">
+                    <span class="result-label">25th percentile:</span>
+                    <span class="result-value">${percentiles.p25}</span>
+                </div>
+                <div class="result-item">
+                    <span class="result-label">50th percentile (median):</span>
+                    <span class="result-value">${percentiles.p50}</span>
+                </div>
+                <div class="result-item">
+                    <span class="result-label">75th percentile:</span>
+                    <span class="result-value">${percentiles.p75}</span>
+                </div>
+                <div class="result-item">
+                    <span class="result-label">95th percentile:</span>
+                    <span class="result-value">${percentiles.p95}</span>
+                </div>
+            `;
+            
+            resultsDiv.style.display = 'block';
+            
+            if (timeMs !== undefined) {
+                document.getElementById('timing').textContent = 
+                    `Calculation completed in ${timeMs.toFixed(2)}ms`;
+            }
+        }
+
+        function calculateDice() {
+            if (!moduleReady) {
+                alert('Module is still loading, please wait...');
+                return;
+            }
+            
+            const count = parseInt(document.getElementById('diceCount').value);
+            const sides = parseInt(document.getElementById('diceSides').value);
+            
+            const start = performance.now();
+            
+            // Create distribution and calculate
+            const distPtr = api.rollDice(count, sides);
+            const percentiles = getDistributionPercentiles(distPtr);
+            api.destroyRangeDist(distPtr);
+            
+            const timeMs = performance.now() - start;
+            
+            displayResults(percentiles, `Rolling ${count}d${sides}`, timeMs);
+        }
+
+        function calculateCustom() {
+            if (!moduleReady) {
+                alert('Module is still loading, please wait...');
+                return;
+            }
+            
+            const start = performance.now();
+            
+            // Calculate 2d6 + 1d4 + 5
+            const d6Ptr = api.rollDice(2, 6);
+            const d4Ptr = api.rollDice(1, 4);
+            const sumPtr = api.addDists(d6Ptr, d4Ptr);
+            const finalPtr = api.addConstant(sumPtr, 5);
+            
+            const percentiles = getDistributionPercentiles(finalPtr);
+            
+            // Clean up
+            api.destroyRangeDist(d6Ptr);
+            api.destroyRangeDist(d4Ptr);
+            api.destroyRangeDist(sumPtr);
+            api.destroyRangeDist(finalPtr);
+            
+            const timeMs = performance.now() - start;
+            
+            displayResults(percentiles, "2d6 + 1d4 + 5", timeMs);
+        }
+
+        function calculateAttack() {
+            if (!moduleReady) {
+                alert('Module is still loading, please wait...');
+                return;
+            }
+            
+            const bonus = parseInt(document.getElementById('attackBonus').value);
+            
+            const start = performance.now();
+            
+            // For advantage, we'd need to implement the max() function
+            // For now, let's just do 1d20 + bonus as a simple attack
+            const d20Ptr = api.rollDice(1, 20);
+            const attackPtr = api.addConstant(d20Ptr, bonus);
+            
+            const percentiles = getDistributionPercentiles(attackPtr);
+            
+            api.destroyRangeDist(d20Ptr);
+            api.destroyRangeDist(attackPtr);
+            
+            const timeMs = performance.now() - start;
+            
+            displayResults(percentiles, `Attack roll (1d20 + ${bonus})`, timeMs);
+        }
+    </script>
+</body>
+</html>
