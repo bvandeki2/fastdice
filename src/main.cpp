@@ -1,5 +1,6 @@
 #include <iostream>
 
+#include "graph.h"
 #include "rangedist.h"
 
 int main() {
@@ -38,7 +39,7 @@ int main() {
         }
     });
 
-    auto percentiles = totalDamage.percentiles({0.05f, 0.25f, 0.5f, 0.75f, 0.95f});
+    auto percentiles = totalDamage.percentiles({ 0.05f, 0.25f, 0.5f, 0.75f, 0.95f });
 
     std::cout << "Damage percentiles:" << std::endl;
     std::cout << "  5th percentile: " << percentiles[0] << std::endl;
@@ -46,6 +47,27 @@ int main() {
     std::cout << " 50th percentile: " << percentiles[2] << std::endl;
     std::cout << " 75th percentile: " << percentiles[3] << std::endl;
     std::cout << " 95th percentile: " << percentiles[4] << std::endl;
+
+    // Graph stuff:
+    using namespace fastdice::graph;
+    auto a = Node::createSum({ Node::createUniform(1, 6), Node::createUniform(1, 8) });
+
+    auto b = Node::createSum({ a, a });
+    auto c = Node::createRepeat(b, Node::createUniform(2, 5));
+    auto d = Node::createPartition(
+        c,
+        { 5, 30, 50 },
+        { 0, 1, 0, 2 },
+        {
+            Node::createSum({ Node::createUniform(1, 4), Node::createFunctionParam() }),
+            Node::createUniform(5, 8),
+            Node::createUniform(9, 12),
+        }
+    );
+
+    d->calculateBounds();
+
+    std::cout << "Node b bounds: [" << d->getMin() << ", " << d->getMax() << "]" << std::endl;
 
     return 0;
 }

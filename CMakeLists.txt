@@ -11,6 +11,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 add_executable(FastDice
     src/main.cpp
     src/rangedist.cpp
+    src/graph.cpp
 )
 
 # Add bench.cpp to the build

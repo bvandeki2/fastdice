@@ -49,7 +49,7 @@ the above runs in roughly ~400us on my machine (5700x3d, 2x32GB 3200MHz DDR4).
 
 ## Building
 
-pick your favorite flavor of C++ 17 and beyond...
+pick your favorite flavor of C++ 17 (std::variant moment) and beyond...
 
 ```sh
 cmake --build build

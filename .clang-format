@@ -1,6 +1,18 @@
-BasedOnStyle: LLVM
+BasedOnStyle: Webkit
 BreakBeforeBraces: Attach
 IndentWidth: 4
 UseTab: Never
 ColumnLimit: 100
-AllowShortIfStatementsOnASingleLine: false
+
+AlignAfterOpenBracket: BlockIndent
+BinPackArguments: false
+BinPackParameters: OnePerLine
+AllowAllArgumentsOnNextLine: true
+AllowAllParametersOfDeclarationOnNextLine: true
+
+# BreakAfterOpenBracketFunction: true
+# BreakAfterReturnType: Automatic
+
+# PenaltyBreakBeforeFirstCallParameter: 0
+# PenaltyBreakOpenParenthesis: 0
+PenaltyReturnTypeOnItsOwnLine: 1000
