@@ -5,50 +5,58 @@
 
 int main() {
 
-    // -5d4 to hit
-    auto v = RangeDist::uniform(1, 20);
+    const int32_t monsterAc = 15;
+    const int32_t attackBonus = 5;
 
-    auto adv = v.maximum({ v, v });
+    const uint32_t times = 5;
 
-    auto times = 1;
-    auto toHitDebuff = RangeDist::uniform(1, 4).repeat(times);
-    auto damageBuff = toHitDebuff.repeat(2);
+    auto hitReduction = RangeDist::uniform(1, 4).repeat(times);
 
-    auto baseDamage = RangeDist::uniform(1, 8).repeat(2);
-    auto bonusDamage = 5;
+    auto bonusDamage = hitReduction.repeat(2);
+    auto baseDamage = RangeDist::uniform(1, 100).repeat(10);
+    auto critDamage = baseDamage + baseDamage;
 
-    auto damage = adv.map(
+    // apply bonus damage to each type of damage roll
+    auto baseDamageAug = baseDamage + bonusDamage;
+    auto critDamageAug = critDamage + bonusDamage;
+
+    // with advantage, roll 2d20
+    auto d20 = RangeDist::uniform(1, 20);
+    auto toHit = d20.maximum({ d20, d20 });
+
+    auto totalDamage = toHit.map(
+        // 20 "splits" the domain into two parts: [-inf, 20) and [20, inf).
+        // mapped onto our domain, that's [1,19] and [20]
+        // the 0, 1 indicates the first span is branch 0, the second is branch 1
+        // this makes it straightforward to partition arbitrarily large domains
+        // though it is a little hard to read as it gets nested/complicated. Probably
+        // use a language binding for anything complex.
         { 20 },
-        { 0, 1 }, // normal, crit
+        { 0, 1 },
         { [&](RangeDist attackRoll) {
-             // not an auto, so the debuff applies
-             auto adjustedRoll = (attackRoll - toHitDebuff).clipMin(1);
-
-             // assume AC 15 for this example
-             auto damageInclMiss = adjustedRoll.map(
-                 { 15 },
-                 { 0, 1 }, // hit, miss
+             auto modifiedRoll = attackRoll - hitReduction;
+             return modifiedRoll.map(
+                 // again, partition into miss/hit.
+                 // note that we were able to take the RangeDist conditional on *not* being a
+                 // crit and reuse it here. `map` is reasonably smart about not computing more
+                 // than needed
+                 { monsterAc },
+                 { 0, 1 }, // miss, hit
                  {
                      [&](RangeDist roll) {
                          return 0; /* miss */
                      },
-                     [&](RangeDist roll) { return baseDamage + damageBuff + bonusDamage; },
+                     [&](RangeDist roll) { return baseDamageAug; },
                  }
              );
-
-             return damageInclMiss;
          },
-          [&](RangeDist attackRoll) {
-              // critical hit: double damage dice
-              auto critDamage = (baseDamage.repeat(2)) + damageBuff + bonusDamage;
-              return critDamage;
-          } }
+          [&](RangeDist attackRoll) { return critDamageAug; } }
     );
 
-    auto percentiles = damage.percentiles({ 0.05f, 0.25f, 0.5f, 0.75f, 0.95f });
+    auto percentiles = totalDamage.percentiles({ 0.05f, 0.25f, 0.5f, 0.75f, 0.95f });
 
-    auto minDamage = damage.getMin();
-    auto maxDamage = damage.getMax();
+    auto minDamage = totalDamage.getMin();
+    auto maxDamage = totalDamage.getMax();
 
     std::cout << "Minimum damage: " << minDamage << std::endl;
     std::cout << "Maximum damage: " << maxDamage << std::endl;
