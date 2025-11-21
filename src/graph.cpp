@@ -1,246 +1,428 @@
-#include "graph.h"
+#include "graph.hpp"
 
-#include <algorithm>
-#include <iostream>
+#include "fft.hpp"
+#include <numeric>
 #include <stdexcept>
-#include <type_traits>
 
 namespace fastdice::graph {
 
-using NodeOp = std::variant<FunctionParam, Uniform, Sum, Negate, NthSmallest, Repeat, Partition>;
-
-Node::Node(NodeOp op)
-    : op(std::move(op))
-    , min(0)
-    , max(0) { }
-
-std::shared_ptr<Node> Node::createFunctionParam() {
-    return std::make_shared<Node>(NodeOp(FunctionParam {}));
-}
-
-std::shared_ptr<Node> Node::createUniform(int32_t min, int32_t max) {
-    return std::make_shared<Node>(NodeOp(Uniform(min, max)));
-}
-
-std::shared_ptr<Node> Node::createSum(std::vector<std::shared_ptr<Node>> args) {
-    return std::make_shared<Node>(NodeOp(Sum(std::move(args))));
-}
-
-std::shared_ptr<Node> Node::createNegate(std::shared_ptr<Node> arg) {
-    return std::make_shared<Node>(NodeOp(Negate(std::move(arg))));
-}
-
-std::shared_ptr<Node> Node::createNthSmallest(
-    std::vector<std::shared_ptr<Node>> args, std::shared_ptr<Node> n
+void naiveConvolve(
+    std::vector<float_t>::const_iterator lhsBegin,
+    std::vector<float_t>::const_iterator lhsEnd,
+    std::vector<float_t>::const_iterator rhsBegin,
+    std::vector<float_t>::const_iterator rhsEnd,
+    std::vector<float_t>::iterator resultBegin
 ) {
-    return std::make_shared<Node>(NodeOp(NthSmallest(std::move(args), std::move(n))));
+    size_t lhsSize = std::distance(lhsBegin, lhsEnd);
+    size_t rhsSize = std::distance(rhsBegin, rhsEnd);
+
+    for (size_t i = 0; i < lhsSize; ++i) {
+        for (size_t j = 0; j < rhsSize; ++j) {
+            *(resultBegin + i + j) += *(lhsBegin + i) * *(rhsBegin + j);
+        }
+    }
 }
 
-std::shared_ptr<Node> Node::createRepeat(std::shared_ptr<Node> arg, std::shared_ptr<Node> count) {
-    return std::make_shared<Node>(NodeOp(Repeat(std::move(arg), std::move(count))));
+DistOp::DistOp(int32_t min, int32_t max, std::vector<std::shared_ptr<DistOp>> args)
+    : min(min)
+    , max(max)
+    , args(std::move(args))
+    , p(std::nullopt) {
+    if (min > max) {
+        throw std::invalid_argument("Distribution operation min must be leq max.");
+    }
 }
 
-std::shared_ptr<Node> Node::createPartition(
-    std::shared_ptr<Node> arg,
-    std::vector<int32_t> splits,
-    std::vector<uint32_t> branchIds,
-    std::vector<std::shared_ptr<Node>> branchNodes
-) {
-    return std::make_shared<Node>(NodeOp(
-        Partition(std::move(arg), std::move(splits), std::move(branchIds), std::move(branchNodes))
-    ));
+const std::vector<float_t>& DistOp::calcProbabilities() {
+    if (!p.has_value()) {
+        this->calculate();
+    }
+    return p.value();
 }
-
-void Node::calculateBounds(const std::optional<std::pair<int32_t, int32_t>>& paramBounds) {
-    std::visit(
-        [this, &paramBounds](auto&& op) {
-            using T = std::decay_t<decltype(op)>;
-
-            if constexpr (std::is_same_v<T, Uniform>) {
-                min = op.min;
-                max = op.max;
-            } else if constexpr (std::is_same_v<T, Sum>) {
-                int32_t totalMin = 0;
-                int32_t totalMax = 0;
-                for (const auto& arg : op.args) {
-                    arg->calculateBounds(paramBounds);
-                    totalMin += arg->min;
-                    totalMax += arg->max;
-                }
-                min = totalMin;
-                max = totalMax;
-            } else if constexpr (std::is_same_v<T, Negate>) {
-                op.arg->calculateBounds(paramBounds);
-                min = -op.arg->max;
-                max = -op.arg->min;
-            } else if constexpr (std::is_same_v<T, FunctionParam>) {
-                if (paramBounds.has_value()) {
-                    min = paramBounds->first;
-                    max = paramBounds->second;
-                } else {
-                    throw std::runtime_error(
-                        "Cannot calculate bounds for FunctionParam nodes; is it not inside a "
-                        "Partition "
-                        "branch?"
-                    );
-                }
-            } else if constexpr (std::is_same_v<T, NthSmallest>) {
-                for (const auto& arg : op.args) {
-                    arg->calculateBounds(paramBounds);
-                }
-                op.n->calculateBounds(paramBounds);
-                if (op.n->min < 0 || op.n->max >= static_cast<int32_t>(op.args.size())) {
-                    throw std::runtime_error(
-                        "NthSmallest node has n out of bounds of its args size"
-                    );
-                }
-                // smallest case is when: each roll was minimum (so arg->min for each), and n is
-                // min, too
-                std::vector<int32_t> vals;
-                vals.reserve(op.args.size());
-                for (const auto& arg : op.args) {
-                    vals.push_back(arg->min);
-                }
-                std::nth_element(vals.begin(), vals.begin() + op.n->min, vals.end());
-                min = vals[op.n->min];
-
-                // largest case is when: each roll was maximum (so arg->max for each), and n is max,
-                // too
-                vals.clear();
-                for (const auto& arg : op.args) {
-                    vals.push_back(arg->max);
-                }
-
-                std::nth_element(
-                    vals.begin(), vals.begin() + op.n->max, vals.end(), std::greater<int32_t>()
-                );
-                max = vals[op.n->max];
-            } else if constexpr (std::is_same_v<T, Repeat>) {
-                op.arg->calculateBounds(paramBounds);
-                op.count->calculateBounds(paramBounds);
-                min = op.arg->min * op.count->min;
-                max = op.arg->max * op.count->max;
-            } else if constexpr (std::is_same_v<T, Partition>) {
-                op.arg->calculateBounds(paramBounds);
-
-                // doing it this way for (theoretically) easier templating later
-                constexpr auto INF_MIN = std::numeric_limits<int32_t>::min();
-                constexpr auto INF_MAX = std::numeric_limits<int32_t>::max();
-
-                std::vector<std::pair<int32_t, int32_t>> branchBounds(
-                    op.branchNodes.size(), { INT_MAX, INT_MIN }
-                );
-                for (size_t i = 0; i < op.branchIds.size(); ++i) {
-                    // inclusive lower, exclusive upper
-                    int32_t spanMin = (i == 0) ? op.arg->min : op.splits[i - 1];
-                    int32_t spanMax = (i == op.splits.size()) ? op.arg->max : op.splits[i] - 1;
-
-                    if (spanMin >= spanMax) {
-                        // empty span, warn and skip...
-                        // TODO: proper logging
-                        std::cerr << "[warn] empty partition span detected in calculateBounds"
-                                  << std::endl;
-                        continue;
-                    }
-
-                    // branches may apply to many spans
-                    std::pair<int32_t, int32_t>& bMinMax = branchBounds[op.branchIds[i]];
-                    if (spanMin < bMinMax.first) {
-                        bMinMax.first = spanMin;
-                    }
-                    if (spanMax > bMinMax.second) {
-                        bMinMax.second = spanMax;
-                    }
-                }
-
-                for (size_t i = 0; i < op.branchNodes.size(); ++i) {
-                    // look, it's the whole reason paramBounds exists!
-                    const auto& branchParamBounds = branchBounds[i];
-                    if (branchParamBounds.first == INT_MAX && branchParamBounds.second == INT_MIN) {
-                        // empty branch? spans are one thing, but this we don't run this branch at
-                        // all
-                        std::cerr << "[warn] empty partition branch detected in calculateBounds"
-                                  << std::endl;
-                        continue;
-                    }
-                    op.branchNodes[i]->calculateBounds(branchParamBounds);
-                }
-
-                // overall min/max is min/max of each branch node's min/max
-                min = INT_MAX;
-                max = INT_MIN;
-                for (const auto& branchNode : op.branchNodes) {
-                    if (branchNode->min < min) {
-                        min = branchNode->min;
-                    }
-                    if (branchNode->max > max) {
-                        max = branchNode->max;
-                    }
-                }
-            } else {
-                throw std::runtime_error(
-                    "[unreachable] calculateBounds not implemented for this node type yet?"
-                );
-            }
-        },
-        op
-    );
-}
-
-void Node::simplify() { }
 
 Uniform::Uniform(int32_t min, int32_t max)
-    : min(min)
-    , max(max) {
+    : DistOp(min, max, {}) {
     if (min > max) {
-        throw std::invalid_argument("Uniform distribution min must be <= max");
+        throw std::invalid_argument("Uniform distribution min must be less than or equal to max.");
     }
 }
 
-Sum::Sum(std::vector<std::shared_ptr<Node>> args)
-    : args(std::move(args)) { }
+void Uniform::calculate() {
+    size_t size = this->size();
+    std::vector<float_t> probabilities(size, 1.0f / size);
+    this->p = std::move(probabilities);
+}
 
-Negate::Negate(std::shared_ptr<Node> arg)
-    : arg(std::move(arg)) { }
+Add::Add(DistOpPtr lhs, DistOpPtr rhs)
+    : DistOp(lhs->getMin() + rhs->getMin(), lhs->getMax() + rhs->getMax(), { lhs, rhs }) { }
 
-NthSmallest::NthSmallest(std::vector<std::shared_ptr<Node>> args, std::shared_ptr<Node> n)
-    : args(std::move(args))
-    , n(std::move(n)) { }
+void Add::calculate() {
+    const auto& lhsProb = args[0]->calcProbabilities();
+    const auto& rhsProb = args[1]->calcProbabilities();
 
-Repeat::Repeat(std::shared_ptr<Node> arg, std::shared_ptr<Node> count)
-    : arg(std::move(arg))
-    , count(std::move(count)) { }
-
-Partition::Partition(
-    std::shared_ptr<Node> arg,
-    std::vector<int32_t> splits,
-    std::vector<uint32_t> branchIds,
-    std::vector<std::shared_ptr<Node>> branchNodes
-)
-    : arg(std::move(arg))
-    , splits(std::move(splits))
-    , branchIds(std::move(branchIds))
-    , branchNodes(std::move(branchNodes)) {
-    if (this->splits.size() + 1 != this->branchIds.size()) {
-        throw std::invalid_argument("Partition must have exactly one more branch ID than splits");
+    // handle addition by constants
+    if (lhsProb.size() == 1) {
+        this->p = rhsProb;
+        return;
     }
-    // branch ids doesn't skip entries
-    uint32_t expectedId = 0;
-    for (uint32_t id : this->branchIds) {
-        if (id > expectedId) {
-            throw std::invalid_argument(
-                "Partition branch IDs must not skip entries; found out-of-order IDs"
-            );
-        }
-        if (id == expectedId) {
-            expectedId = id + 1;
-        }
+    if (rhsProb.size() == 1) {
+        this->p = lhsProb;
+        return;
     }
 
-    if (expectedId != this->branchNodes.size()) {
-        throw std::invalid_argument(
-            "Partition must have exactly one branch node for each unique branch ID"
+    size_t resultSize = this->size();
+    std::vector<float_t> result(resultSize, 0.0f);
+
+    // TODO: an actual strategy to choose between naive and FFT
+    if (lhsProb.size() >= 64 && rhsProb.size() >= 64) {
+        convolveFFT(lhsProb.begin(), lhsProb.end(), rhsProb.begin(), rhsProb.end(), result.begin());
+    } else {
+        naiveConvolve(
+            lhsProb.begin(), lhsProb.end(), rhsProb.begin(), rhsProb.end(), result.begin()
         );
     }
+
+    this->p = std::move(result);
 }
+
+Negate::Negate(DistOpPtr operand)
+    : DistOp(-operand->getMax(), -operand->getMin(), { operand }) { }
+
+void Negate::calculate() {
+    const auto& operandProb = args[0]->calcProbabilities();
+    size_t size = this->size();
+    std::vector<float_t> result(size, 0.0f);
+
+    for (size_t i = 0; i < operandProb.size(); ++i) {
+        result[size - i - 1] = operandProb[i];
+    }
+
+    this->p = std::move(result);
+}
+
+Multiply::Multiply(DistOpPtr lhs, DistOpPtr rhs)
+    : DistOp(lhs->getMin() * rhs->getMin(), lhs->getMax() * rhs->getMax(), { lhs, rhs }) { }
+
+void Multiply::calculate() {
+    const auto& lhsProb = args[0]->calcProbabilities();
+    const auto& rhsProb = args[1]->calcProbabilities();
+
+    size_t resultSize = this->size();
+    std::vector<float_t> result(resultSize, 0.0f);
+
+    for (size_t i = 0; i < lhsProb.size(); ++i) {
+        for (size_t j = 0; j < rhsProb.size(); ++j) {
+            int32_t product = (i + args[0]->getMin()) * (j + args[1]->getMin());
+            result[product - this->min] += lhsProb[i] * rhsProb[j];
+        }
+    }
+
+    this->p = std::move(result);
+}
+
+Keep::Keep(std::vector<DistOpPtr> dists, size_t begin, size_t end)
+    : DistOp(dists.front()->getMin(), dists.front()->getMax(), dists)
+    , keepBegin(begin)
+    , keepEnd(end) {
+    if (begin >= end) {
+        throw std::invalid_argument("Keep operation begin must be less than end.");
+    }
+}
+
+void Keep::calculate() {
+    // placeholder: we only support largest and smallest for now
+    if (keepBegin == 0 && keepEnd == 1) {
+        // minimum of independent dists
+        const size_t distCount = args.size();
+        std::vector<std::vector<float_t>> suffixes;
+        suffixes.reserve(distCount);
+
+        for (const auto& dist : args) {
+            const auto& probs = dist->calcProbabilities();
+            std::vector<float_t> suffix(probs.size() + 1, 0.0f);
+            float_t running = 0.0f;
+            for (size_t i = probs.size(); i-- > 0;) {
+                running += probs[i];
+                suffix[i] = running;
+            }
+            suffixes.push_back(std::move(suffix));
+        }
+
+        const auto tailProb = [&](size_t distIdx, int32_t value) -> float_t {
+            const auto& dist = args[distIdx];
+            const int32_t distMin = dist->getMin();
+            const int32_t distMax = dist->getMax();
+            if (value <= distMin) {
+                return 1.0f;
+            }
+            if (value >= distMax) {
+                return 0.0f;
+            }
+            const size_t offset = static_cast<size_t>(value - distMin);
+            return suffixes[distIdx][offset];
+        };
+
+        std::vector<float_t> result(this->size(), 0.0f);
+        for (size_t idx = 0; idx < result.size(); ++idx) {
+            const int32_t value = this->min + static_cast<int32_t>(idx);
+            float_t geValue = 1.0f;
+            float_t geNext = 1.0f;
+            for (size_t distIdx = 0; distIdx < distCount; ++distIdx) {
+                geValue *= tailProb(distIdx, value);
+                geNext *= tailProb(distIdx, value + 1);
+            }
+            float_t mass = geValue - geNext;
+            if (mass < 0.0f) {
+                mass = 0.0f;
+            }
+            result[idx] = mass;
+        }
+
+        this->p = std::move(result);
+    } else if (keepBegin == args.size() - 1 && keepEnd == args.size()) {
+        // maximum of independent dists
+        const size_t distCount = args.size();
+        std::vector<std::vector<float_t>> prefixes;
+        prefixes.reserve(distCount);
+
+        for (const auto& dist : args) {
+            const auto& probs = dist->calcProbabilities();
+            std::vector<float_t> prefix(probs.size() + 1, 0.0f);
+            float_t running = 0.0f;
+            for (size_t i = 0; i < probs.size(); ++i) {
+                running += probs[i];
+                prefix[i + 1] = running;
+            }
+            prefixes.push_back(std::move(prefix));
+        }
+
+        const auto cdf = [&](size_t distIdx, int32_t value) -> float_t {
+            const auto& dist = args[distIdx];
+            const int32_t distMin = dist->getMin();
+            const int32_t distMax = dist->getMax();
+            if (value < distMin) {
+                return 0.0f;
+            }
+            if (value >= distMax) {
+                return 1.0f;
+            }
+            const size_t offset = static_cast<size_t>(value - distMin + 1);
+            return prefixes[distIdx][offset];
+        };
+
+        std::vector<float_t> result(this->size(), 0.0f);
+        for (size_t idx = 0; idx < result.size(); ++idx) {
+            const int32_t value = this->min + static_cast<int32_t>(idx);
+            float_t leValue = 1.0f;
+            float_t lePrev = 1.0f;
+            for (size_t distIdx = 0; distIdx < distCount; ++distIdx) {
+                leValue *= cdf(distIdx, value);
+                lePrev *= cdf(distIdx, value - 1);
+            }
+            float_t mass = leValue - lePrev;
+            if (mass < 0.0f) {
+                mass = 0.0f;
+            }
+            result[idx] = mass;
+        }
+
+        this->p = std::move(result);
+    } else {
+        throw std::runtime_error("Keep operation with arbitrary ranges not implemented.");
+    }
+}
+
+Repeat::Repeat(DistOpPtr dist, size_t times)
+    : DistOp(dist->getMin() * times, dist->getMax() * times, { dist })
+    , times(times) { }
+
+void Repeat::calculate() {
+    if (times == 0) {
+        // degenerate distribution at 0
+        std::vector<float_t> result(1, 1.0f);
+        this->p = std::move(result);
+        return;
+    }
+    if (times == 1) {
+        this->p = args[0]->calcProbabilities();
+        return;
+    }
+
+    const auto& distProb = args[0]->calcProbabilities();
+
+    size_t resultSize = this->size();
+    std::vector<float_t> result(resultSize, 0.0f);
+
+    if (times == 2 && distProb.size() < 64) {
+        naiveConvolve(
+            distProb.begin(), distProb.end(), distProb.begin(), distProb.end(), result.begin()
+        );
+    } else {
+        nConvolveFFT(distProb.begin(), distProb.end(), times, result.begin());
+    }
+
+    this->p = std::move(result);
+}
+Partition::Partition(DistOpPtr dist, std::vector<int32_t> splits, std::vector<size_t> branchIds)
+    : DistOp(0, 0, { std::move(dist) })
+    , splits(std::move(splits))
+    , branchIds(std::move(branchIds)) {
+    for (size_t i = 1; i < this->splits.size(); ++i) {
+        if (this->splits[i] <= this->splits[i - 1]) {
+            throw std::invalid_argument("Partition splits must be strictly increasing.");
+        }
+    }
+
+    if (this->branchIds.size() != this->splits.size() + 1) {
+        throw std::invalid_argument("Mismatch between number of partition branches and splits.");
+    }
+
+    size_t expected = 0;
+    for (size_t id : this->branchIds) {
+        if (id > expected) {
+            throw std::invalid_argument("Partition branch IDs must not skip values.");
+        }
+        if (id == expected) {
+            expected++;
+        }
+    }
+
+    this->min = 0;
+    this->max = static_cast<int32_t>(expected - 1);
+}
+void Partition::calculate() {
+    const auto& distProb = args[0]->calcProbabilities();
+    const int32_t distMin = args[0]->getMin();
+    const int32_t distMax = args[0]->getMax();
+
+    size_t resultSize = this->size();
+
+    std::vector<float_t> result(resultSize, 0.0f);
+
+    for (size_t i = 0; i < this->branchIds.size(); ++i) {
+        // `splits` separates the set of integers into `splits.size() + 1` spans
+        // defined on the half-open intervals of pairwise:
+        // [-inf, splits[0]), [splits[0], splits[1]), ..., [splits[n-1], +inf)
+        // of course, we limit to the actual distribution range in implementation
+        int32_t spanMin = (i == 0) ? distMin : splits[i - 1];
+        int32_t spanMax = (i == splits.size()) ? distMax : splits[i] - 1;
+        if (spanMin > spanMax) {
+            // empty branch, shouldn't happen with well-specified splits
+            continue;
+        }
+        size_t spanSize = static_cast<size_t>(spanMax - spanMin + 1);
+        size_t branchId = branchIds[i];
+        for (size_t j = 0; j < spanSize; ++j) {
+            int32_t outcome = spanMin + static_cast<int32_t>(j);
+            result[branchId] += distProb[static_cast<size_t>(outcome - distMin)];
+        }
+    }
+
+    this->p = std::move(result);
+}
+
+std::tuple<int32_t, int32_t> Partition::getBranchRange(size_t branchId) {
+    int32_t branchMin = std::numeric_limits<int32_t>::max();
+    int32_t branchMax = std::numeric_limits<int32_t>::min();
+
+    for (size_t i = 0; i < this->branchIds.size(); ++i) {
+        if (this->branchIds[i] == branchId) {
+            int32_t spanMin = (i == 0) ? args[0]->getMin() : splits[i - 1];
+            int32_t spanMax = (i == splits.size()) ? args[0]->getMax() : splits[i];
+            branchMin = std::min(branchMin, spanMin);
+            branchMax = std::max(branchMax, spanMax);
+        }
+    }
+
+    if (branchMin > branchMax) {
+        throw std::out_of_range("Branch does not exist or has no support.");
+    }
+
+    return { branchMin, branchMax };
+}
+
+std::vector<float_t> Partition::calculateConditionalDistribution(
+    size_t branchId, int32_t branchMin, int32_t branchMax
+) {
+    const auto& distProb = args[0]->calcProbabilities();
+
+    size_t branchSize = static_cast<size_t>(branchMax - branchMin + 1);
+    std::vector<float_t> conditionalDist(branchSize, 0.0f);
+
+    const int32_t distMin = args[0]->getMin();
+    for (int32_t value = branchMin; value <= branchMax; ++value) {
+        conditionalDist[static_cast<size_t>(value - branchMin)]
+            = distProb[static_cast<size_t>(value - distMin)];
+    }
+
+    // Normalize the distribution
+    float_t total = std::accumulate(conditionalDist.begin(), conditionalDist.end(), 0.0f);
+    for (auto& prob : conditionalDist) {
+        prob /= total;
+    }
+
+    return conditionalDist;
+}
+
+BranchInput::BranchInput(DistOpPtr partitionDist, size_t branchId)
+    : DistOp(0, 0, { std::move(partitionDist) })
+    , branchId(branchId) {
+    auto partitionPtr = std::dynamic_pointer_cast<Partition>(args[0]);
+    if (!partitionPtr) {
+        throw std::invalid_argument("BranchInput requires a Partition node as its argument.");
+    }
+
+    auto [branchMin, branchMax] = partitionPtr->getBranchRange(branchId);
+    this->min = branchMin;
+    this->max = branchMax;
+}
+
+void BranchInput::calculate() {
+    // static cast is probably safe too
+    auto partitionPtr = std::dynamic_pointer_cast<Partition>(args[0]);
+    if (!partitionPtr) {
+        throw std::runtime_error("BranchInput argument is not a Partition node.");
+    }
+
+    std::vector<float_t> conditionalDist
+        = partitionPtr->calculateConditionalDistribution(branchId, this->min, this->max);
+
+    this->p = std::move(conditionalDist);
+}
+
+Merge::Merge(DistOpPtr idxDist, std::vector<DistOpPtr> branchDists)
+    : DistOp(0, 0, std::vector<DistOpPtr> { std::move(idxDist) }) {
+    // determine min and max from branches
+    // constructor will yell at us if we tried to do this above
+    this->min = std::numeric_limits<int32_t>::max();
+    this->max = std::numeric_limits<int32_t>::min();
+
+    for (auto& dist : branchDists) {
+        if (dist->getMin() < this->min) {
+            this->min = dist->getMin();
+        }
+        if (dist->getMax() > this->max) {
+            this->max = dist->getMax();
+        }
+        this->args.push_back(std::move(dist));
+    }
+}
+
+void Merge::calculate() {
+    const auto& idxProb = args[0]->calcProbabilities();
+    size_t resultSize = this->size();
+    std::vector<float_t> result(resultSize, 0.0f);
+
+    for (size_t branchId = 0; branchId < args.size() - 1; ++branchId) {
+        const auto& branchProb = args[branchId + 1]->calcProbabilities();
+        int32_t branchMin = args[branchId + 1]->getMin();
+        for (size_t i = 0; i < branchProb.size(); ++i) {
+            int32_t outcome = branchMin + static_cast<int32_t>(i);
+            result[static_cast<size_t>(outcome - this->min)] += idxProb[branchId] * branchProb[i];
+        }
+    }
+
+    this->p = std::move(result);
+}
+
 } // namespace fastdice::graph

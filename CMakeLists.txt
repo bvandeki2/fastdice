@@ -12,10 +12,13 @@ add_executable(FastDice
     src/main.cpp
     src/rangedist.cpp
     src/graph.cpp
+    src/fft.cpp
 )
 
 # Add bench.cpp to the build
 add_executable(Bench
     src/bench.cpp
     src/rangedist.cpp
+    src/graph.cpp
+    src/fft.cpp
 )

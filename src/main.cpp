@@ -1,73 +1,63 @@
 #include <iostream>
 
-#include "graph.h"
-#include "rangedist.h"
+#include "graph.hpp"
+#include "rangedist.hpp"
 
 int main() {
+
     // -5d4 to hit
-    auto hitReduction = RangeDist::uniform(1, 4).repeat(5);
+    auto v = RangeDist::uniform(1, 20);
 
-    // but +10d4 to damage on a hit!
-    auto bonusDamage = RangeDist::uniform(1, 4).repeat(10);
+    auto adv = v.maximum({ v, v });
 
-    // stupid damage to test how this program scales
-    auto baseDamage = RangeDist::uniform(1, 100).repeat(10);
-    auto critDamage = baseDamage + baseDamage; // roll damage again on a crit
+    auto times = 1;
+    auto toHitDebuff = RangeDist::uniform(1, 4).repeat(times);
+    auto damageBuff = toHitDebuff.repeat(2);
 
-    // apply bonus damage to each type of damage roll
-    auto baseDamageAug = baseDamage + bonusDamage;
-    auto critDamageAug = critDamage + bonusDamage;
+    auto baseDamage = RangeDist::uniform(1, 8).repeat(2);
+    auto bonusDamage = 5;
 
-    const int32_t monsterAc = 15;
-    const int32_t attackBonus = 5;
+    auto damage = adv.map(
+        { 20 },
+        { 0, 1 }, // normal, crit
+        { [&](RangeDist attackRoll) {
+             // not an auto, so the debuff applies
+             auto adjustedRoll = (attackRoll - toHitDebuff).clipMin(1);
 
-    auto totalDamage = RangeDist::uniform(1, 20).map([&](int32_t d20roll) {
-        if (d20roll == 20) {
-            return critDamageAug;
-        } else {
-            // silly order just to get RangeDist first, this is just a normal attack
-            // roll
-            auto toHit = (-hitReduction) + d20roll + attackBonus;
+             // assume AC 15 for this example
+             auto damageInclMiss = adjustedRoll.map(
+                 { 15 },
+                 { 0, 1 }, // hit, miss
+                 {
+                     [&](RangeDist roll) {
+                         return 0; /* miss */
+                     },
+                     [&](RangeDist roll) { return baseDamage + damageBuff + bonusDamage; },
+                 }
+             );
 
-            return toHit.map([&](int32_t attackRoll) {
-                if (attackRoll >= monsterAc) {
-                    // hit!
-                    return baseDamageAug;
-                }
-                return RangeDist::uniform(0, 0); // no damage on miss
-            });
-        }
-    });
+             return damageInclMiss;
+         },
+          [&](RangeDist attackRoll) {
+              // critical hit: double damage dice
+              auto critDamage = (baseDamage.repeat(2)) + damageBuff + bonusDamage;
+              return critDamage;
+          } }
+    );
 
-    auto percentiles = totalDamage.percentiles({ 0.05f, 0.25f, 0.5f, 0.75f, 0.95f });
+    auto percentiles = damage.percentiles({ 0.05f, 0.25f, 0.5f, 0.75f, 0.95f });
 
+    auto minDamage = damage.getMin();
+    auto maxDamage = damage.getMax();
+
+    std::cout << "Minimum damage: " << minDamage << std::endl;
+    std::cout << "Maximum damage: " << maxDamage << std::endl;
     std::cout << "Damage percentiles:" << std::endl;
     std::cout << "  5th percentile: " << percentiles[0] << std::endl;
     std::cout << " 25th percentile: " << percentiles[1] << std::endl;
     std::cout << " 50th percentile: " << percentiles[2] << std::endl;
     std::cout << " 75th percentile: " << percentiles[3] << std::endl;
     std::cout << " 95th percentile: " << percentiles[4] << std::endl;
-
-    // Graph stuff:
-    using namespace fastdice::graph;
-    auto a = Node::createSum({ Node::createUniform(1, 6), Node::createUniform(1, 8) });
-
-    auto b = Node::createSum({ a, a });
-    auto c = Node::createRepeat(b, Node::createUniform(2, 5));
-    auto d = Node::createPartition(
-        c,
-        { 5, 30, 50 },
-        { 0, 1, 0, 2 },
-        {
-            Node::createSum({ Node::createUniform(1, 4), Node::createFunctionParam() }),
-            Node::createUniform(5, 8),
-            Node::createUniform(9, 12),
-        }
-    );
-
-    d->calculateBounds();
-
-    std::cout << "Node b bounds: [" << d->getMin() << ", " << d->getMax() << "]" << std::endl;
 
     return 0;
 }
